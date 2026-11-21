@@ -1,0 +1,9 @@
+toggle_keys = ["Ctrl", "Alt", "U"]
+quit_keys = ["Ctrl", "Alt", "Shift", "Q"]
+hold_ms = 800
+start_locked = true
+disable_touchpad = false
+unlock_color = "#00E5FF"
+lock_color = "#FF3D7F"
+quit_color = "#FFB020"
+glow_width = 36
