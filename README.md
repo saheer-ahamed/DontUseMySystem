@@ -3,6 +3,12 @@
 Blocks every mouse, keyboard and touchpad event on Windows until you hold a key combination.
 A glowing border shows the hold progress, then flashes to confirm.
 
+## Download
+
+Get `dontusemysystem.exe` from the [latest release](https://github.com/saheer-ahamed/DontUseMySystem/releases/latest) and run it.
+It is a single portable exe for Windows 10 and 11 (x64), with nothing to install.
+The exe is not code-signed, so SmartScreen may warn on first run: choose "More info", then "Run anyway".
+
 ## Use
 
 - Hold **Ctrl+Alt+U** for 1.2 s to unlock. Hold it again to lock.
@@ -23,6 +29,17 @@ cargo build --release
 ```bash
 target/release/dontusemysystem.exe
 ```
+
+## Install a local build
+
+```bash
+powershell -ExecutionPolicy Bypass -File scripts/install.ps1 -Desktop
+```
+
+This copies the release build to `%LOCALAPPDATA%\Programs\DontUseMySystem` and adds a Start menu shortcut.
+`-Desktop` also adds a desktop shortcut, and `-Startup` launches it at sign-in.
+Run it again after a rebuild to update, or pass `-Uninstall` to remove it.
+Quit the app first, since the script refuses to replace or remove a running copy.
 
 Settings live in `%APPDATA%\DontUseMySystem\config.toml`, created on first run.
 Flags: `--config <path>`, `--unlocked`, `--failsafe <secs>`, `--log <path>`, `--no-elevate`.
@@ -55,3 +72,7 @@ powershell -ExecutionPolicy Bypass -File scripts/e2e.ps1
 
 The end-to-end script runs the real exe and injects input, so your own input is blocked for about 10 s while it runs.
 Run it from an elevated PowerShell to include the touchpad checks.
+
+## License
+
+[MIT](LICENSE)
