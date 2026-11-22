@@ -45,6 +45,50 @@ public static class Input {
     }
     public static POINT Cursor() { POINT p; GetCursorPos(out p); return p; }
 
+    // Tray: find our icon, click it like a user would, and see whether the menu opened.
+    [StructLayout(LayoutKind.Sequential)] struct RECT { public int L, T, R, B; }
+    [StructLayout(LayoutKind.Sequential)] struct NOTIFYICONIDENTIFIER { public uint cbSize; public IntPtr hWnd; public uint uID; public Guid guid; }
+    [DllImport("shell32.dll")] static extern int Shell_NotifyIconGetRect(ref NOTIFYICONIDENTIFIER id, out RECT r);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern IntPtr FindWindow(string cls, string title);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern IntPtr FindWindowEx(IntPtr parent, IntPtr after, string cls, string title);
+    [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
+    [DllImport("user32.dll")] static extern bool SetCursorPos(int x, int y);
+    [DllImport("user32.dll")] static extern bool PostMessage(IntPtr h, uint msg, IntPtr wp, IntPtr lp);
+    [DllImport("user32.dll")] static extern bool AllowSetForegroundWindow(int pid);
+    static IntPtr Controller() { return FindWindow("DontUseMySystem.Controller", null); }
+    // Null when the icon is not registered with the shell.
+    public static int[] TrayRect() {
+        var id = new NOTIFYICONIDENTIFIER { hWnd = Controller(), uID = 1 };
+        id.cbSize = (uint)Marshal.SizeOf(typeof(NOTIFYICONIDENTIFIER));
+        RECT r;
+        if (id.hWnd == IntPtr.Zero || Shell_NotifyIconGetRect(ref id, out r) != 0) return null;
+        return new[] { r.L, r.T, r.R, r.B };
+    }
+    public static bool MenuOpen() {
+        for (IntPtr h = FindWindowEx(IntPtr.Zero, IntPtr.Zero, "#32768", null); h != IntPtr.Zero; h = FindWindowEx(IntPtr.Zero, h, "#32768", null))
+            if (IsWindowVisible(h)) return true;
+        return false;
+    }
+    // Clicks the centre of the icon's rect, if that is on the taskbar or its overflow flyout.
+    // Hidden icons report the overflow chevron's rect until the flyout is open.
+    public static bool ClickTray(bool right) {
+        SetProcessDPIAware();
+        var r = TrayRect();
+        if (r == null) return false;
+        var c = new POINT { X = (r[0] + r[2]) / 2, Y = (r[1] + r[3]) / 2 };
+        SetCursorPos(c.X, c.Y);
+        var i = new INPUT { type = 0 };
+        i.mi.flags = right ? 0x8u : 0x2u; Send(i);
+        i.mi.flags = right ? 0x10u : 0x4u; Send(i);
+        return true;
+    }
+    // What the shell sends for a right click, used when the icon is in the overflow flyout.
+    public static void OpenTrayMenu(int pid) {
+        AllowSetForegroundWindow(pid);
+        var p = Cursor();
+        PostMessage(Controller(), 0x8002, (IntPtr)((p.Y << 16) | (p.X & 0xFFFF)), (IntPtr)(0x7B | (1 << 16)));
+    }
+
     public static bool ScrollLockOn() { return (GetKeyState(0x91) & 1) != 0; }
     [DllImport("user32.dll")] static extern IntPtr GetDC(IntPtr h);
     [DllImport("user32.dll")] static extern int ReleaseDC(IntPtr h, IntPtr dc);
@@ -64,7 +108,7 @@ public static class Input {
 }
 '@ -ReferencedAssemblies System.Drawing, System.Windows.Forms
 
-$CTRL = 0xA2; $ALT = 0xA4; $SHIFT = 0xA0; $U = 0x55; $Q = 0x51; $SCROLL = 0x91
+$CTRL = 0xA2; $ALT = 0xA4; $SHIFT = 0xA0; $U = 0x55; $Q = 0x51; $L = 0x4C; $ESC = 0x1B; $SCROLL = 0x91
 $failures = @()
 function Check([bool]$ok, [string]$what) {
     if ($ok) { Write-Host "  ok   $what" } else { Write-Host "  FAIL $what"; $script:failures += $what }
@@ -82,6 +126,28 @@ function KeyArrives {
     if ($changed) { [Input]::Key($SCROLL, $true); [Input]::Key($SCROLL, $false); Start-Sleep -Milliseconds 80 }
     return $changed
 }
+# Opens the menu the way a user does: right-click the icon, first opening the
+# overflow flyout if the icon is hidden there. Posting the shell's callback is
+# the last resort, for taskbars where the icon cannot be reached by clicking.
+function TrayMenu([System.Diagnostics.Process]$proc) {
+    $before = [Input]::TrayRect() -join ','
+    if ([Input]::ClickTray($true)) {
+        Start-Sleep -Milliseconds 300
+        if ([Input]::MenuOpen()) { Write-Host "       (menu opened by right-clicking the icon)"; return $true }
+        if ([Input]::ClickTray($false)) { Start-Sleep -Milliseconds 600 }
+        if (([Input]::TrayRect() -join ',') -ne $before -and [Input]::ClickTray($true)) {
+            Start-Sleep -Milliseconds 300
+            if ([Input]::MenuOpen()) { Write-Host "       (menu opened by right-clicking the icon in the overflow flyout)"; return $true }
+        }
+        Tap $ESC
+    }
+    [Input]::OpenTrayMenu($proc.Id)
+    Start-Sleep -Milliseconds 300
+    $open = [Input]::MenuOpen()
+    if ($open) { Write-Host "       (menu opened by posting the shell callback)" }
+    return $open
+}
+function Tap([int]$vk) { [Input]::Key($vk, $true); [Input]::Key($vk, $false); Start-Sleep -Milliseconds 250 }
 function Hold([int[]]$keys, [int]$ms, [string]$shot = "") {
     foreach ($k in $keys) { [Input]::Key($k, $true) }
     try {
@@ -154,6 +220,23 @@ try {
     Check (MouseMoves) "input works after exit"
     TouchpadIs $true "touchpad on after exit"
 
+    Write-Host "tray"
+    $t = Launch @("--unlocked", "--failsafe", "20", "--log", "`"$log.tray`"")
+    Start-Sleep -Milliseconds 700
+    Check ($null -ne [Input]::TrayRect()) "tray icon registered"
+    Check (TrayMenu $t) "tray menu opens while unlocked"
+    Tap $L
+    Check (-not [Input]::MenuOpen()) "menu closes after Lock now"
+    Check (-not (MouseMoves)) "Lock now locks"
+    Check (-not (TrayMenu $t)) "tray menu does not open while locked"
+    Hold @($CTRL, $ALT, $U) 1000
+    Check (TrayMenu $t) "tray menu opens again after unlock"
+    Tap $Q
+    Check ($t.WaitForExit(1500)) "Quit from tray exits"
+    Check ($null -eq [Input]::TrayRect()) "tray icon removed on exit"
+    if (-not $t.HasExited) { $t.Kill() }
+    if ([Input]::MenuOpen()) { Tap $ESC }
+
     # Killed while locked: the touchpad stays off until the next launch restores it.
     if ($tp) {
         $k = Launch @("--failsafe", "10", "--log", "`"$log.2`"")
@@ -169,5 +252,5 @@ finally {
     if (-not $p.HasExited) { $p.Kill() }
     if ($tp -and -not (TouchpadOn)) { Write-Host "  restoring touchpad"; (Launch @("--unlocked", "--failsafe", "1")).WaitForExit() }
 }
-Write-Host "`nlog:"; Get-Content $log | ForEach-Object { "  $_" }
+Write-Host "`nlog:"; Get-Content $log, "$log.tray" -ErrorAction SilentlyContinue | ForEach-Object { "  $_" }
 if ($failures.Count) { Write-Host "`n$($failures.Count) FAILED"; exit 1 } else { Write-Host "`nall passed" }

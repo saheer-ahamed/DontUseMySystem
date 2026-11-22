@@ -15,8 +15,8 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, CreateWindowExW, DefWindowProcW, DispatchMessageW, EVENT_SYSTEM_DESKTOPSWITCH,
-    GetMessageW, HC_ACTION, HHOOK, KBDLLHOOKSTRUCT, KillTimer, MSG, MSLLHOOKSTRUCT, PostMessageW,
-    PostQuitMessage, RegisterClassExW, SetTimer, SetWindowsHookExW, TranslateMessage,
+    EndMenu, GetMessageW, HC_ACTION, HHOOK, KBDLLHOOKSTRUCT, KillTimer, MSG, MSLLHOOKSTRUCT,
+    PostMessageW, PostQuitMessage, RegisterClassExW, SetTimer, SetWindowsHookExW, TranslateMessage,
     UnhookWindowsHookEx, WH_KEYBOARD_LL, WH_MOUSE_LL, WINEVENT_OUTOFCONTEXT, WM_APP,
     WM_DISPLAYCHANGE, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP,
     WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SYSKEYDOWN, WM_TIMER, WM_XBUTTONDOWN, WM_XBUTTONUP,
@@ -29,6 +29,7 @@ use crate::config::{Config, Rgb};
 use crate::engine::{Action, Engine, Event, Mode};
 use crate::overlay::{self, Overlay};
 use crate::touchpad::Touchpad;
+use crate::tray::{self, Tray};
 use crate::{keys, log};
 
 /// Marks the no-op key we inject, so our own hook lets it through.
@@ -59,6 +60,9 @@ struct App {
     hooks: Hooks,
     /// `None` when `disable_touchpad` is off.
     touchpad: Option<Touchpad>,
+    tray: Tray,
+    /// Shown in the tray menu, read without borrowing the App.
+    toggle_name: String,
     unlock_color: Rgb,
     lock_color: Rgb,
     quit_color: Rgb,
@@ -135,6 +139,7 @@ pub fn run(cfg: Config, opts: Options) -> Result<(), String> {
         }
     }
 
+    let toggle_name = keys::combo_name(&cfg.toggle_keys);
     let mut app = App {
         controller,
         overlay: Overlay::new(cfg.glow_width),
@@ -143,6 +148,13 @@ pub fn run(cfg: Config, opts: Options) -> Result<(), String> {
         was_holding: false,
         hooks,
         touchpad: cfg.disable_touchpad.then(Touchpad::new),
+        tray: Tray::new(
+            controller,
+            instance,
+            start == Mode::Locked,
+            toggle_name.clone(),
+        ),
+        toggle_name,
         unlock_color: cfg.unlock_color,
         lock_color: cfg.lock_color,
         quit_color: cfg.quit_color,
@@ -210,8 +222,43 @@ fn create_controller(instance: HINSTANCE) -> Result<HWND, String> {
     }
 }
 
+/// Opens the tray menu while unlocked. The menu runs outside any App borrow,
+/// since its modal loop keeps dispatching our timers.
+fn on_tray(hwnd: HWND, wp: WPARAM, lp: LPARAM) {
+    let Some(at) = tray::menu_request(wp, lp) else {
+        return;
+    };
+    if with_engine(|e| e.mode()) == Mode::Locked {
+        return;
+    }
+    let mut toggle = String::new();
+    with_app(|a| toggle.clone_from(&a.toggle_name));
+    match tray::show_menu(hwnd, at, &toggle) {
+        tray::CMD_LOCK => {
+            if let Some(ev) = with_engine(Engine::lock) {
+                with_app(|a| {
+                    log::line("lock from tray");
+                    a.apply(ev, Instant::now());
+                    a.start_animating();
+                });
+            }
+        }
+        tray::CMD_QUIT => {
+            log::line("quit from tray");
+            unsafe { PostQuitMessage(0) };
+        }
+        _ => {}
+    }
+}
+
 unsafe extern "system" fn controller_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    if msg == tray::taskbar_created() {
+        log::line("taskbar restarted, re-adding tray icon");
+        with_app(|a| a.tray.add());
+        return LRESULT(0);
+    }
     match msg {
+        tray::WM_TRAY => on_tray(hwnd, wp, lp),
         WM_APP_WAKE => with_app(App::start_animating),
         WM_TIMER => match wp.0 {
             TIMER_ANIM => with_app(App::frame),
@@ -225,6 +272,7 @@ unsafe extern "system" fn controller_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: 
         WM_DISPLAYCHANGE => with_app(|a| {
             log::line("display changed, rebuilding glow");
             a.overlay = Overlay::new(a.glow_width);
+            a.tray.reload_icons();
         }),
         _ => return unsafe { DefWindowProcW(hwnd, msg, wp, lp) },
     }
@@ -241,6 +289,30 @@ impl App {
         }
     }
 
+    /// Applies a lock or unlock, whether it came from a hold or the tray menu.
+    fn apply(&mut self, event: Event, now: Instant) {
+        let locked = match event {
+            Event::Locked => true,
+            Event::Unlocked => false,
+            Event::Quit => return,
+        };
+        log::line(if locked { "locked" } else { "unlocked" });
+        if locked {
+            // A tray menu left open would sit on screen, unreachable, until unlock.
+            unsafe {
+                let _ = EndMenu();
+            }
+        }
+        self.set_touchpad_locked(locked);
+        self.tray.set_locked(locked);
+        let color = if locked {
+            self.lock_color
+        } else {
+            self.unlock_color
+        };
+        self.anim.flash(color, now);
+    }
+
     fn start_animating(&mut self) {
         if !self.animating {
             unsafe { SetTimer(Some(self.controller), TIMER_ANIM, FRAME_MS, None) };
@@ -254,23 +326,16 @@ impl App {
             let ev = e.tick(now);
             (ev, e.progress(now), e.mode())
         });
-        match event {
-            Some(Event::Quit) => {
+        if let Some(ev) = event {
+            if ev == Event::Quit {
                 log::line("quit");
-                unsafe { PostQuitMessage(0) };
+                unsafe {
+                    let _ = EndMenu();
+                    PostQuitMessage(0);
+                }
                 return;
             }
-            Some(Event::Unlocked) => {
-                log::line("unlocked");
-                self.set_touchpad_locked(false);
-                self.anim.flash(self.unlock_color, now);
-            }
-            Some(Event::Locked) => {
-                log::line("locked");
-                self.set_touchpad_locked(true);
-                self.anim.flash(self.lock_color, now);
-            }
-            None => {}
+            self.apply(ev, now);
         }
         match (self.was_holding, hold) {
             (false, Some((a, _))) => log::line(&format!("hold started {a:?}")),

@@ -13,6 +13,8 @@ mod overlay;
 mod app;
 #[cfg(windows)]
 mod touchpad;
+#[cfg(windows)]
+mod tray;
 
 use std::path::PathBuf;
 use std::time::Duration;

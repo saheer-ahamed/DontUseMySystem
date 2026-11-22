@@ -12,7 +12,8 @@ The exe is not code-signed, so SmartScreen may warn on first run: choose "More i
 ## Use
 
 - Hold **Ctrl+Alt+U** for 1.2 s to unlock. Hold it again to lock.
-- While unlocked, hold **Ctrl+Alt+Shift+Q** to quit.
+- While unlocked, hold **Ctrl+Alt+Shift+Q** to quit, or use the tray icon's menu: **Lock now** or **Quit**.
+  The tray icon shows the state (pink closed lock when locked, cyan open lock when unlocked); its menu only opens while unlocked.
 - Emergency exit: **Ctrl+Alt+Del** always works, then end the process in Task Manager.
 - If the app crashes, Windows removes its hooks and input comes back on its own.
 - The touchpad is disabled while locked and enabled again when you unlock or quit.
@@ -48,6 +49,8 @@ Flags: `--config <path>`, `--unlocked`, `--failsafe <secs>`, `--log <path>`, `--
 
 - `WH_KEYBOARD_LL` and `WH_MOUSE_LL` hooks drop events before any app sees them.
 - `src/engine.rs` is the pure state machine (lock state, combo holds, which key-ups to drop), covered by unit tests.
+- `src/tray.rs` is the notification-area icon and menu.
+  The icons are drawn by `scripts/make-icons.ps1` into `assets/` and compiled into the exe by `build.rs`.
 - The glow is four click-through layered windows per monitor; fading only changes the window alpha, so animating costs almost nothing.
 - Hooks are re-installed every 3 s, because Windows silently drops a low-level hook whose callback is ever too slow.
 - Touchpad gestures go straight to the Windows shell and bypass hooks, so `src/touchpad.rs` disables the touchpad's HID collection (`HID_DEVICE_UP:000D_U:0005`) on a worker thread.

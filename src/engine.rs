@@ -157,6 +157,16 @@ impl Engine {
         })
     }
 
+    /// Locks right away, for the tray menu. Any hold in progress is dropped.
+    pub fn lock(&mut self) -> Option<Event> {
+        if self.mode == Mode::Locked {
+            return None;
+        }
+        self.mode = Mode::Locked;
+        self.pending = None;
+        Some(Event::Locked)
+    }
+
     /// The hold in progress and how far along it is, from 0 to 1.
     pub fn progress(&self, now: Instant) -> Option<(Action, f32)> {
         let p = self.pending?;
@@ -239,6 +249,22 @@ mod tests {
         assert!(e.on_key(A, false, t).swallow);
         assert!(e.on_button(0, true));
         assert!(e.on_button(0, false));
+        assert!(e.on_motion());
+    }
+
+    #[test]
+    fn lock_from_tray_blocks_new_input_but_releases_held_input() {
+        let mut e = engine(Mode::Unlocked);
+        let t = Instant::now();
+        assert!(!e.on_button(0, true));
+        assert!(!e.on_key(A, true, t).swallow);
+        assert_eq!(e.lock(), Some(Event::Locked));
+        assert_eq!(e.lock(), None);
+        // Releases of things pressed before the lock reach apps, so nothing sticks down.
+        assert!(!e.on_button(0, false));
+        assert!(!e.on_key(A, false, t).swallow);
+        assert!(e.on_button(0, true));
+        assert!(e.on_key(A, true, t).swallow);
         assert!(e.on_motion());
     }
 
