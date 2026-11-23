@@ -1,80 +1,71 @@
 # DontUseMySystem
 
-Blocks every mouse, keyboard and touchpad event on Windows until you hold a key combination.
-A glowing border shows the hold progress, then flashes to confirm.
+Blocks the mouse, keyboard and touchpad on Windows until you hold a shortcut, without hiding your screen.
 
-## Download
+## Why
 
-Get `dontusemysystem.exe` from the [latest release](https://github.com/saheer-ahamed/DontUseMySystem/releases/latest) and run it.
-It is a single portable exe for Windows 10 and 11 (x64), with nothing to install.
-The exe is not code-signed, so SmartScreen may warn on first run: choose "More info", then "Run anyway".
+The Windows lock screen hides what you are doing.
+We wanted the opposite: leave the screen in view, but let nobody touch it.
+We also did not want a stray click or key press to stop anything that is running, so whatever was in progress carries on while the input is locked.
 
-## Use
+## Get started
 
-- Hold **Ctrl+Alt+U** for 1.2 s to unlock. Hold it again to lock.
-- While unlocked, hold **Ctrl+Alt+Shift+Q** to quit, or use the tray icon's menu: **Lock now** or **Quit**.
-  The tray icon shows the state (pink closed lock when locked, cyan open lock when unlocked); its menu only opens while unlocked.
-- Emergency exit: **Ctrl+Alt+Del** always works, then end the process in Task Manager.
-- If the app crashes, Windows removes its hooks and input comes back on its own.
-- The touchpad is disabled while locked and enabled again when you unlock or quit.
-  This needs administrator rights, so the app asks for them through UAC at launch.
-  Decline, or pass `--no-elevate`, and everything else still works, but touchpad gestures get through.
-  If the app is killed while locked, the touchpad comes back on the next launch or the next reboot, whichever is first.
+1. Download `dontusemysystem.exe` from the [latest release](https://github.com/saheer-ahamed/DontUseMySystem/releases/latest).
+   It runs on 64-bit Windows 10 and 11, with nothing to install.
+2. Run it and approve the administrator prompt.
+   The exe is not code-signed, so if SmartScreen warns you, choose **More info**, then **Run anyway**.
+3. Input is now locked.
+   Hold **Ctrl+Alt+U** until the border flashes to unlock.
 
-## Build and run
+## Controls
 
-```bash
-cargo build --release
-```
+| To | Do this |
+| --- | --- |
+| Unlock | Hold **Ctrl+Alt+U** for 1.2 seconds |
+| Lock again | Hold **Ctrl+Alt+U** for 1.2 seconds, or tray icon > **Lock now** |
+| Quit (while unlocked) | Hold **Ctrl+Alt+Shift+Q** for 1.2 seconds, or tray icon > **Quit** |
+| Get out in an emergency | Press **Ctrl+Alt+Del**, open Task Manager and end the app |
 
-```bash
-target/release/dontusemysystem.exe
-```
+The border glows brighter as you hold, and letting go early cancels.
+The tray icon is a pink closed lock while locked and a cyan open lock while unlocked.
+Its menu opens only while unlocked.
 
-## Install a local build
+## Settings
 
-```bash
-powershell -ExecutionPolicy Bypass -File scripts/install.ps1 -Desktop
-```
+Edit `%APPDATA%\DontUseMySystem\config.toml`, then restart the app.
+The file is created on first run.
 
-This copies the release build to `%LOCALAPPDATA%\Programs\DontUseMySystem` and adds a Start menu shortcut.
-`-Desktop` also adds a desktop shortcut, and `-Startup` launches it at sign-in.
-Run it again after a rebuild to update, or pass `-Uninstall` to remove it.
-Quit the app first, since the script refuses to replace or remove a running copy.
+| Setting | Default | What it does |
+| --- | --- | --- |
+| `toggle_keys` | `["Ctrl", "Alt", "U"]` | Shortcut to lock and unlock |
+| `quit_keys` | `["Ctrl", "Alt", "Shift", "Q"]` | Shortcut to quit; delete the line to turn it off |
+| `hold_ms` | `1200` | How long to hold, from 200 to 10000 milliseconds |
+| `start_locked` | `true` | Lock as soon as the app starts |
+| `disable_touchpad` | `true` | Turn the touchpad off while locked |
+| `unlock_color`, `lock_color`, `quit_color` | `#00E5FF`, `#FF3D7F`, `#FFB020` | Border colors |
+| `glow_width` | `36` | Border width in pixels at 100% display scaling |
 
-Settings live in `%APPDATA%\DontUseMySystem\config.toml`, created on first run.
-Flags: `--config <path>`, `--unlocked`, `--failsafe <secs>`, `--log <path>`, `--no-elevate`.
+## Good to know
 
-## How it works
+- Administrator rights are needed to turn the touchpad off and to block input to apps running as administrator.
+  If you decline the prompt, everything else still works.
+- If the app is killed while locked, the mouse and keyboard come back at once.
+  The touchpad comes back on the next launch or restart.
+- The app does not keep the PC awake, so your Windows sleep settings still apply.
+- Windows does not let any app block Ctrl+Alt+Del or Win+L.
+- Touchscreens and pens are untested and may not be blocked.
+- This keeps hands off your PC, but it is not a replacement for the Windows lock screen.
 
-- `WH_KEYBOARD_LL` and `WH_MOUSE_LL` hooks drop events before any app sees them.
-- `src/engine.rs` is the pure state machine (lock state, combo holds, which key-ups to drop), covered by unit tests.
-- `src/tray.rs` is the notification-area icon and menu.
-  The icons are drawn by `scripts/make-icons.ps1` into `assets/` and compiled into the exe by `build.rs`.
-- The glow is four click-through layered windows per monitor; fading only changes the window alpha, so animating costs almost nothing.
-- Hooks are re-installed every 3 s, because Windows silently drops a low-level hook whose callback is ever too slow.
-- Touchpad gestures go straight to the Windows shell and bypass hooks, so `src/touchpad.rs` disables the touchpad's HID collection (`HID_DEVICE_UP:000D_U:0005`) on a worker thread.
-  Only that collection is disabled, never its parent device, which on some laptops also carries the keyboard.
-  The disable is not persisted, so a reboot always restores it.
+## Tech
 
-## Known limits
+A single Rust exe that calls the Win32 API directly, with no UI framework.
 
-- Ctrl+Alt+Del and Win+L cannot be blocked by any normal app.
-- Windows running as administrator ignore hooks from a non-admin process. Run this app as administrator to cover them.
-- Touchscreen and pen input are untested and may get through.
+- **Input:** low-level keyboard and mouse hooks drop events before other apps see them.
+- **Touchpad:** gestures bypass those hooks, so the touchpad device is disabled while locked.
+- **Border:** click-through layered windows on every monitor.
 
-## Tests
-
-```bash
-cargo test
-```
-
-```bash
-powershell -ExecutionPolicy Bypass -File scripts/e2e.ps1
-```
-
-The end-to-end script runs the real exe and injects input, so your own input is blocked for about 10 s while it runs.
-Run it from an elevated PowerShell to include the touchpad checks.
+To build it, run `cargo build --release`.
+To test it, run `cargo test`, or `scripts/e2e.ps1` for a run with real input.
 
 ## License
 
